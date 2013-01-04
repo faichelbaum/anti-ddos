@@ -1,0 +1,491 @@
+#!/bin/bash
+
+# Fonction d'usage et sortie en erreur
+######################################
+
+function usage {
+	echo "$0 --type [fw|cdn|waf|vpn] (--mgmt ip) (--serv ip) (--pub ip/gw) (--vip ip1,ip2,...)"
+	exit 1
+}
+
+# Controle sur les arguments
+############################
+
+if [ $# -lt 6 ]; then
+	usage
+fi
+if [ $# -gt 10 ]; then
+	usage
+fi
+
+# Initialisation des variables globales
+#######################################
+
+type=0
+serv=0
+mgmt=0
+pub=0
+vip=0
+
+# Gestion des options de setup
+##############################
+
+function setup {
+	case "$1" in
+		'network')
+			case "$2" in
+				'service')
+					setupNetworkServ $serv
+					;;
+				'mgmt')
+					setupNetworkMgmt $mgmt
+					;;
+				'pub')
+					case "$type" in
+						'cdn'|'fw')
+							setupNetworkPub $pub
+							;;
+						*)
+							echo "IP publique valide seulement pour 'fw' ou 'cdn'"
+							usage
+							;;
+					esac
+					;;
+			esac
+			;;
+		'vip')
+			setupNetworkVip $vip
+			;;
+		'service')
+			case "$2" in
+				'fw')
+					setupFw
+					;;
+				'cdn')
+					setupCdn
+					;;
+				'waf')
+					setupWaf
+					;;
+				'vpn')
+					setupTunnel
+					;;
+			esac
+			;;
+		*)
+			usage
+			;;
+	esac
+}
+
+# Configuration du reseau de MGMT
+#################################
+
+function setupNetworkMgmt {
+	echo -n "Configuration reseau MGMT: "
+	net_mgmt=`echo $mgmt | awk -F. '{ print $1"."$2"."$3 }'`
+	vpn=`echo $mgmt | awk -F. '{ $3=$3+2;print $1"."$2"."$3".0/24" }'`
+	cat << EOF >> /etc/network/interfaces
+# MGMT
+auto eth0
+iface eth0 inet static
+ address $mgmt
+ netmask 255.255.255.0
+ post-up route add -net $vpn gw $net_mgmt.101
+EOF
+	sed -i "s/X.X.X.X/$mgmt/g" /usr/local/nagios/etc/nrpe.cfg
+	sed -i "s^Y.Y.Y.Y^$vpn^g" /usr/local/nagios/etc/nrpe.cfg
+	sed -i "s/X.X.X.X/$mgmt/g" /etc/default/snmpd
+	sed -i "s/X.X.X.X/$mgmt/g" /etc/ssh/sshd_config
+	sed -i "s/X.X.X.X/$mgmt/g" /etc/snmp/snmpd.conf
+	sed -i "s^Y.Y.Y.Y^$vpn^g" /etc/snmp/snmpd.conf
+	echo "ok"
+}
+
+# Configuration du reseau de SERV
+#################################
+
+function setupNetworkServ {
+	echo -n "Configuration reseau SERV: "
+	cat << EOF >> /etc/network/interfaces
+# SERV
+auto eth1
+iface eth1 inet static
+ address $serv
+ netmask 255.255.255.0
+EOF
+	if [ "$pub" = "0" ]; then
+		net_serv=`echo $serv | awk -F. '{ print $1"."$2"."$3 }'`
+		echo " gateway $net_serv.1" >> /etc/network/interfaces
+		ifup eth1
+	fi
+	echo "" >> /etc/network/interfaces
+	echo "ok"
+}
+
+# Configuration du reseau de PUB
+################################
+
+function setupNetworkPub {
+	echo "Avez-vous configurer la vMAC sur l'interface PUBLIC dans le panel ESXi ?"
+	select yn in "Oui" "Non"; do
+		case $yn in
+			"Oui" )
+				break
+				;;
+			"Non" )
+				usage
+				;;
+		esac
+	done
+	echo -n "Configuration reseau PUB: "
+	gw=`echo $pub | awk -F/ '{ print $2 }'`
+	pub=`echo $pub | awk -F/ '{ print $1 }'`
+	cat << EOF >> /etc/network/interfaces
+# PUB
+auto eth2
+iface eth2 inet static
+ address $pub
+ netmask 255.255.255.255
+ broadcast $pub
+ post-up route add $gw dev eth2
+ post-up route add default gw $gw
+ post-down route del $gw dev eth2
+ post-down route del default gw $gw
+
+EOF
+	ifup eth2
+	echo "ok"
+}
+
+# Configuration des VIP
+#######################
+
+function setupNetworkVip {
+	echo -n "Configuration VIP: "
+	case "$type" in
+		"fw")
+			int="eth2"
+			;;
+		*)
+			int="lo"
+			;;
+	esac
+	i=1
+	for ip in `echo $vip | sed 's/,/ /g'`; do
+		cat << EOF >> /etc/network/interfaces
+# VIP $i
+auto $int:$i
+iface $int:$i inet static
+ address $ip
+ netmask 255.255.255.255
+ broadcast $ip
+
+EOF
+		i=`expr $i + 1`;
+	done
+	echo "ok"
+}
+
+# Creation d'un WAF
+###################
+
+function setupWaf {
+	echo "Creation du WAF :"
+	# prise en compte du reseau
+	echo "- configuration reseau"
+	net_serv=`echo $serv | awk -F/ '{ print $1 }' | awk -F. '{ print $1"."$2"."$3 }'`
+	# packages
+	echo "- packages"
+	apt-get -y purge exim4-base exim4-config exim4-daemon-light
+	# optimisations
+	echo "- optimisations"
+	echo "* - nofile 65536" > /etc/security/limits.conf
+	cp /usr/local/bin/deploy.d/waf/sysctl.conf /etc/sysctl.conf
+	# Nginx + Naxsi
+	echo "- nginx + naxsi"
+	echo "deb http://backports.debian.org/debian-backports squeeze-backports main" >> /etc/apt/sources.list
+	apt-get update	
+	apt-get -y --force-yes -t squeeze-backports install nginx-naxsi nginx-naxsi-ui
+	echo 'ULIMIT="-n 65536"' >> /etc/default/nginx
+	sed "s/X.X.X/$net_serv/g" /usr/local/bin/deploy.d/waf/nginx.conf > /etc/nginx/nginx.conf
+	cp /usr/local/bin/deploy.d/waf/naxsi-ui.conf /etc/nginx/
+	cp /usr/local/bin/deploy.d/waf/vhost.tpl /usr/local/etc/vhost.tpl 
+	echo "sysadmin	ALL= NOPASSWD: /usr/local/bin/ddos,/etc/init.d/nginx,/etc/init.d/nginx-naxsi-ui,/etc/init.d/mysql,/bin/cat" >> /etc/sudoers
+	cp /usr/local/bin/deploy.d/waf/ddos /usr/local/bin/ddos 
+	chmod +x /usr/local/bin/ddos
+	echo "- monitoring"
+	# NRPE
+	cp /usr/local/bin/deploy.d/waf/check_naxsi /usr/local/nagios/libexec
+	chmod +x /usr/local/nagios/libexec/check_naxsi
+	echo "command[check_http]=/usr/local/nagios/libexec/check_http -H localhost" >> /usr/local/nagios/etc/nrpe.cfg
+	echo "command[check_naxsi]=/usr/local/nagios/libexec/check_naxsi" >> /usr/local/nagios/etc/nrpe.cfg
+	# HOSTS
+	echo "$net_serv.211 cdn" >> /etc/hosts
+}
+
+# Creation d'un CDN
+###################
+
+function setupCdn {
+	echo "Creation du CDN :"
+	echo "- configuration reseau"
+	net_serv=`echo $serv | awk -F/ '{ print $1 }' | awk -F. '{ print $1"."$2"."$3 }'`
+	pub1=`echo $pub | awk -F/ '{ print $1 }'`
+	gw1=`echo $pub1 | awk -F. '{ $4="252"; print $1"."$2"."$3"."$4 }' | sed 's/ /./g'`
+	gw2=`echo $pub1 | awk -F. '{ $4="253"; print $1"."$2"."$3"."$4 }' | sed 's/ /./g'`
+	gw3=`echo $pub1 | awk -F. '{ $4="254"; print $1"."$2"."$3"."$4 }' | sed 's/ /./g'`
+	# packages
+	echo "- packages"
+	apt-get -y install portsentry
+	apt-get -y purge exim4-base exim4-config exim4-daemon-light
+	# optimisations
+	echo "- optimisations"
+	echo "* - nofile 65536" > /etc/security/limits.conf
+	cp /usr/local/bin/deploy.d/cdn/sysctl.conf /etc/sysctl.conf
+	# Nginx + Naxsi
+	echo "- nginx + naxsi"
+	echo "deb http://backports.debian.org/debian-backports squeeze-backports main" >> /etc/apt/sources.list
+	apt-get update	
+	aptitude -y -t squeeze-backports install nginx-extras
+	echo 'ULIMIT="-n 65536"' >> /etc/default/nginx
+	sed "s/X.X.X/$net_serv/g" /usr/local/bin/deploy.d/cdn/nginx.conf > /etc/nginx/nginx.conf
+	cp /usr/local/bin/deploy.d/cdn/vhost.tpl /usr/local/etc/vhost.tpl 
+	echo "sysadmin	ALL= NOPASSWD: /usr/local/bin/ddos,/etc/init.d/nginx,/bin/cat,/bin/rm,/bin/grep" >> /etc/sudoers
+	cp /usr/local/bin/deploy.d/cdn/ddos /usr/local/bin/ddos 
+	chmod +x /usr/local/bin/ddos
+	echo "- monitoring"
+	# NRPE
+	echo "command[check_http]=/usr/local/nagios/libexec/check_http -H cdn" >> /usr/local/nagios/etc/nrpe.cfg
+	# HOSTS
+	echo "$net_serv.211 cdn" >> /etc/hosts
+	# Anti scan de port
+	echo "- portsentry"
+	cp /usr/local/bin/deploy.d/cdn/portsentry /etc/default/portsentry
+	cp /usr/local/bin/deploy.d/cdn/portsentry.conf /etc/portsentry/portsentry.conf
+	cat << EOF > /etc/portsentry/portsentry.ignore.static
+208.67.222.222
+208.67.220.220
+$gw1
+$gw2
+$gw3
+EOF
+}
+
+# Creation d'un VPN
+###################
+
+function setupTunnel {
+	echo "Creation VPN :"
+	# prise en compte du reseau
+	echo "- configuration reseau"
+	net_mgmt=`echo $mgmt | awk -F/ '{ print $1 }' | awk -F. '{ print $1"."$2"."$3 }'`
+	net_serv=`echo $serv | awk -F/ '{ print $1 }' | awk -F. '{ print $1"."$2"."$3 }'`
+	net_vpn=`echo $net_serv | awk -F'.' '{ $3=$3+1; print $1"."$2"."$3 }' | sed 's/ /./g'`
+	# packages
+	echo "- packages"
+	apt-get -y install openvpn
+	apt-get -y purge exim4-base exim4-config exim4-daemon-light
+	# optimisations
+	echo "- optimisations"
+	echo "* - nofile 65536" > /etc/security/limits.conf
+	cp /usr/local/bin/deploy.d/vpn/sysctl.conf /etc/sysctl.conf
+	echo "- openvpn"
+	mkdir -p /etc/openvpn/easy-rsa/keys
+	cp -r /usr/share/doc/openvpn/examples/easy-rsa/2.0/* /etc/openvpn/easy-rsa/
+	chown -R $USER /etc/openvpn/easy-rsa/
+	cp /usr/local/bin/deploy.d/vpn/vars /etc/openvpn/easy-rsa/vars
+	cd /etc/openvpn/easy-rsa
+	source ./vars
+	./clean-all
+	./build-ca
+	./build-key-server server
+	./build-dh
+	openvpn --genkey --secret keys/ta.key
+	cp keys/ca.crt keys/ta.key keys/server.crt keys/server.key keys/dh2048.pem /etc/openvpn/
+	mkdir /etc/openvpn/jail
+	mkdir /etc/openvpn/clientconf
+	sed "s^X.X.X^$net_vpn^g" /usr/local/bin/deploy.d/vpn/server.conf | sed "s^Y.Y.Y^$net_serv^g" | sed "s^Z.Z.Z^$net_mgmt^g" > /etc/openvpn/server.conf
+	cat << EOF > /etc/rc.local
+iptables -t nat -A POSTROUTING -s $net_vpn.0/24 -o eth1 -j MASQUERADE
+exit 0
+EOF
+}
+
+# Creation d'un FW
+##################
+
+function setupFw {
+	echo "Creation FW :"
+	# prise en compte du reseau
+	echo "- configuration reseau"
+	pub1=`echo $pub | awk -F/ '{ print $1 }'`
+	pub2=`echo $pub1 | awk -F. '{ $4=$4+1; print $1"."$2"."$3"."$4 }' | sed 's/ /./g'`
+	gw1=`echo $pub1 | awk -F. '{ $4="252"; print $1"."$2"."$3"."$4 }' | sed 's/ /./g'`
+	gw2=`echo $pub1 | awk -F. '{ $4="253"; print $1"."$2"."$3"."$4 }' | sed 's/ /./g'`
+	gw3=`echo $pub1 | awk -F. '{ $4="254"; print $1"."$2"."$3"."$4 }' | sed 's/ /./g'`
+	vpn=`echo $vip | awk -F, '{ print $1 }'` 
+	vip1=$vpn
+	vip2=`echo $vip | awk -F, '{ print $2 }'` 
+	vip3=`echo $vip | awk -F, '{ print $3 }'` 
+	net_mgmt=`echo $mgmt | awk -F/ '{ print $1 }' | awk -F. '{ print $1"."$2"."$3 }'`
+	net_serv=`echo $serv | awk -F/ '{ print $1 }' | awk -F. '{ print $1"."$2"."$3 }'`
+	# packages
+	echo "- packages"
+	apt-get -y install libnetfilter-conntrack3 ldirectord honeyd fail2ban farpd portsentry libssl-dev iptables module-assistant xtables-addons-common 
+	module-assistant --verbose --text-mode auto-install xtables-addons
+	apt-get -y purge exim4-base exim4-config exim4-daemon-light
+	# optimisations
+	echo "- optimisations"
+	echo "* - nofile 65536" > /etc/security/limits.conf
+	cp /usr/local/bin/deploy.d/fw/sysctl.conf /etc/sysctl.conf
+	# honeypot
+	echo "- honeypot"
+	cat << EOF > /etc/rc.local
+/usr/local/bin/rules.sh start
+exit 0
+EOF
+	sed "s/unconfigured/$pub2/g" /etc/default/farpd | sed -i 's/eth0/eth2/g' /etc/default/farpd
+	cp /usr/src/ddos/deployment/deploy.d/fw/customPie.pm /etc/honeypot/customPie.pm
+	chmod 755 /etc/honeypot/customPie.pm
+	cp /usr/src/ddos/deployment/deploy.d/fw/buildPie.pl /etc/honeypot/buildPie.pl
+	chmod 755 /etc/honeypot/buildPie.pl
+	cat << EOF > /etc/default/honeyd
+RUN="yes"
+INTERFACE="eth2"
+NETWORK=$pub2
+OPTIONS="--disable-webserver"
+EOF
+	sed "s/X.X.X.X/$pub2/g" /usr/local/bin/deploy.d/fw/honeyd.conf > /etc/honeypot/honeyd.conf
+	cat << EOF > /etc/fail2ban/filter.d/honeyd.conf
+[Definition]
+failregex = .* S <HOST> .*\$
+ignoreregex = 
+EOF
+	cat << EOF > /etc/fail2ban/action.d/banhost.conf
+[Definition]
+actionstart = 
+actionstop = 
+actioncheck = 
+actionban = /usr/local/bin/ddos ban <ip>
+actionunban = /usr/local/bin/ddos unban <ip>
+EOF
+	sed "s/X.X.X.X/$pub1/g" /usr/local/bin/deploy.d/fw/jail.conf > /etc/fail2ban/jail.conf
+	# portsentry
+	echo "- portsentry"
+	cp /usr/local/bin/deploy.d/fw/portsentry /etc/default/portsentry
+	cp /usr/local/bin/deploy.d/fw/portsentry.conf /etc/portsentry/portsentry.conf
+	cat << EOF > /etc/portsentry/portsentry.ignore.static
+208.67.222.222
+208.67.220.220
+EOF
+	echo $gw1 >> /etc/portsentry/portsentry.ignore.static
+	echo $gw2 >> /etc/portsentry/portsentry.ignore.static
+	echo $gw3 >> /etc/portsentry/portsentry.ignore.static
+	# firewalling
+	echo "- iptables"
+	cp /usr/local/bin/deploy.d/fw/ddos /usr/local/bin/ddos
+	chmod +x /usr/local/bin/ddos
+	chmod 755 /usr/local/bin/ddos
+	echo "sysadmin ALL= NOPASSWD:/usr/local/bin/ddos, /sbin/iptables, /bin/ps, /bin/cat, /sbin/ipvsadm, /etc/init.d/honeyd, /etc/init.d/farpd, /etc/init.d/fail2ban, /etc/init.d/portsentry, /etc/init.d/ldirectord, /usr/local/bin/rules.sh" >> /etc/sudoers
+	sed "s/VIP1/$vip1/g" /usr/src/ddos/deployment/deploy.d/fw/rules.sh | sed "s/VIP2/$vip2/g" | sed "s/VIP3/$vip3/g" | sed "s/VPN/$vpn/g" | sed "s/NET_SERV/$net_serv/g" > /usr/local/bin/rules.sh
+	chmod +x /usr/local/bin/rules.sh
+	cat << EOF > /usr/local/etc/whitelist 
+127.0.0.1
+208.67.222.222
+208.67.220.220
+$net_mgmt.0/24
+$net_serv.0/24
+EOF
+	echo $net_serv | awk -F. '{ $3=$3+1; print $1"."$2"."$3".0/24" }' | sed 's/ /./g' >> /usr/local/etc/whitelist 
+	for ip in `echo $vip | sed 's/,/ /g'`; do
+		echo $ip >> /usr/local/etc/whitelist 
+		echo $ip | awk -F. '{ print $1"."$2"."$3".252" }' >> /usr/local/etc/whitelist 
+		echo $ip | awk -F. '{ print $1"."$2"."$3".253" }' >> /usr/local/etc/whitelist 
+		echo $ip | awk -F. '{ print $1"."$2"."$3".254" }' >> /usr/local/etc/whitelist 
+	done
+	route -e -n | grep default | awk '{ print $2 }' >> /usr/local/etc/whitelist 
+	route -e -n | grep default | awk '{ print $2 }' | awk -F. '{ $4=$4-1; print $1"."$2"."$3"."$4 }' | sed 's/ /./g' >> /usr/local/etc/whitelist 
+	route -e -n | grep default | awk '{ print $2 }' | awk -F. '{ $4=$4-2; print $1"."$2"."$3"."$4 }' | sed 's/ /./g' >> /usr/local/etc/whitelist 
+	# load balancing
+	echo "- lb"
+	echo CONFIG_FILE=/etc/ldirectord.cf >> /etc/default/ldirectord
+	sed "s/NET_SERV/$net_serv/g" /usr/local/bin/deploy.d/fw/ldirectord.cf | sed "s/VIP1/$vip1/g" | sed "s/VIP2/$vip2/g" | sed "s/VIP3/$vip3/g" | sed "s/VPN/$vpn/g" > /etc/ldirectord.cf
+	cat << EOF >> /usr/local/nagios/etc/nrpe.cfg
+command[check_ldirectord]=/usr/local/nagios/libexec/check_procs -C ldirectord
+command[check_portsentry]=/usr/local/nagios/libexec/check_procs -C portsentry
+EOF
+	cp /usr/local/bin/deploy.d/fw/check_honeyd /usr/local/nagios/libexec
+        chmod +x /usr/local/nagios/libexec/check_honeyd
+        echo "command[check_honeyd]=/usr/local/nagios/libexec/check_honeyd" >> /usr/local/nagios/etc/nrpe.cfg
+}
+
+while [ "$1" ]; do
+	case "$1" in
+		'--type')
+			case "$2" in
+				'fw'|'cdn'|'waf'|'vpn')
+					type=$2
+					;;
+				*)
+					usage
+					;;	
+			esac
+			;;
+		'--mgmt')
+			mgmt=$2
+			;;
+		'--serv')
+			serv=$2
+			;;
+		'--pub')
+			pub=$2
+			;;
+		'--vip')
+			vip=$2
+			;;
+		*)
+			usage
+			;;
+	esac
+	shift 2
+done
+
+# Deploiement
+#############
+
+# Reseau
+cat << EOF > /etc/network/interfaces
+auto lo
+iface lo inet loopback
+
+EOF
+
+if [ "$pub" != "0" ]; then
+	setup network pub $pub
+fi
+if [ "$serv" = "0" ]; then
+	usage
+fi
+setup network service $serv
+if [ "$mgmt" = "0" ]; then
+	usage
+fi
+setup network mgmt $mgmt
+
+# VIP
+if [ "$vip" = "0" ]; then
+	usage
+fi
+setup vip $vip
+
+# Demarrage reseau
+/etc/init.d/networking stop
+sleep 1
+/etc/init.d/networking start
+
+# Service
+setup service $type
+
+exit 0
+
