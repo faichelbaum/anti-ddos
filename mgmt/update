@@ -1,0 +1,31 @@
+#!/bin/bash
+
+if [ $# -ne 1 ]; then
+	echo "$0 <brick>"
+	exit 1
+fi
+
+svn up /usr/src/ddos
+
+case "$1" in
+	'dummy')
+		rsync -av /usr/src/ddos/deployment/* /usr/local/bin/ --exclude=".svn"
+		;;
+	'fw')
+		;;
+	'cdn')
+		;;
+	'waf')
+		;;
+	'vpn')
+		;;
+	'etl')
+		rsync -av /usr/src/ddos/mgmt/* /usr/local/bin/ --exclude=".svn"
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac
+
+exit 0

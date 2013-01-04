@@ -1,0 +1,233 @@
+#!/bin/bash
+
+firewalls='fw01 fw11' 
+wafs='waf01 waf11'
+cdns='cdn01 cdn11'
+
+usage() {
+	cat << EOF
+ddos fw list				list all blacklisted IP
+        check <ip>			check if ip is blacklisted
+        ban <ip>			ban ip
+        unban <ip>			unban ip
+
+     web list				list all vhost config filenames
+         search <fqdn>			search fqdn and provide right config filename
+         delete <vhost>			delete vhost config filename
+         create <fqdn,...> <ip>		create vhost using first fqdn as config filename
+         cc <fqdn> <uri>		clear cache for the uri upon fqdn (do not use http:// prefix)
+     srv status				list status of all service all over platform
+         restart (<column|bick>)	restart all service (from all, a column - 01 or 11 - or a brick)
+         stop (<column|bick>)		stop all service (from all, a column - 01 or 11 - or a brick)
+         start (<column|bick>)		start all service (from all, a column - 01 or 11 - or a brick)
+EOF
+	exit 1
+}
+
+if [ $# -lt 2 ]; then 
+	usage 
+fi
+if [ $# -gt 4 ]; then 
+	usage 
+fi
+
+case "$1" in
+	fw)
+		case "$2" in
+			list)
+				if [ $# -ne 2 ]; then 
+					usage 
+				fi
+				for fw in $firewalls; do
+					ssh $fw "sudo /usr/local/bin/ddos list"
+				done | sort | uniq
+				;;
+			check)
+				if [ $# -ne 3 ]; then 
+					usage 
+				fi
+				for fw in $firewalls; do
+					ssh $fw "sudo /usr/local/bin/ddos check $3"
+				done | sort | uniq
+				;;
+			ban)
+				if [ $# -ne 3 ]; then 
+					usage 
+				fi
+				for fw in $firewalls; do
+					ssh $fw "sudo /usr/local/bin/ddos ban $3"
+				done | sort | uniq
+				;;
+			unban)
+				if [ $# -ne 3 ]; then 
+					usage 
+				fi
+				for fw in $firewalls; do
+					ssh $fw "sudo /usr/local/bin/ddos unban $3"
+				done | sort | uniq
+				;;
+			*)
+				usage
+				;;
+		esac
+		;;
+	web)
+		case "$2" in
+			list)
+				if [ $# -ne 2 ]; then 
+					usage 
+				fi
+				for server in $wafs ; do
+					ssh $server "sudo /usr/local/bin/ddos list"
+				done | sort | uniq
+				;;
+			search)
+				if [ $# -ne 3 ]; then 
+					usage 
+				fi
+				for server in $wafs; do
+					ssh $server "sudo /usr/local/bin/ddos search $3"
+				done | sort | uniq
+				;;
+			delete)
+				if [ $# -ne 3 ]; then 
+					usage 
+				fi
+				for server in $wafs; do
+					echo -n "$server: "
+					ssh $server "sudo /usr/local/bin/ddos delete $3"
+				done
+				for server in $cdns; do
+					echo -n "$server: "
+					ssh $server "sudo /usr/local/bin/ddos delete $3"
+				done
+				;;
+			create)
+				if [ $# -ne 4 ]; then 
+					usage 
+				fi
+				for server in $wafs; do
+					echo -n "$server: "
+					ssh $server "sudo /usr/local/bin/ddos create $3 $4"
+				done
+				for server in $cdns; do
+					echo -n "$server: "
+					ssh $server "sudo /usr/local/bin/ddos create $3 $4"
+				done
+				;;
+			cc)
+				for server in $cdns; do
+					echo -n "$server: "
+					ssh $server "sudo /usr/local/bin/ddos cc $3 $4"
+				done
+				;;
+			*)
+				usage
+				;;
+		esac
+		;;
+	srv)
+		case "$2" in
+			status)
+				for server in $firewalls; do
+					echo -n "$server: "
+					ssh $server "sudo /usr/local/bin/ddos status"
+				done
+				for server in $wafs; do
+					echo -n "$server: "
+					ssh $server "sudo /usr/local/bin/ddos status"
+				done
+				for server in $cdns; do
+					echo -n "$server: "
+					ssh $server "sudo /usr/local/bin/ddos status"
+				done
+				;;
+			stop)
+				echo "Stop ..."
+				case $# in
+					2)
+						for server in $firewalls; do
+							echo -n "$server: "
+							ssh $server "sudo /usr/local/bin/ddos stop"
+						done
+						for server in $wafs; do
+							echo -n "$server: "
+							ssh $server "sudo /usr/local/bin/ddos stop"
+						done
+						for server in $cdns; do
+							echo -n "$server: "
+							ssh $server "sudo /usr/local/bin/ddos stop"
+						done
+						;;
+					3)
+						case "$3" in
+							'01')
+								for server in 'fw01' 'waf01' 'cdn01'; do
+									echo -n "$server: "
+									ssh $server "sudo /usr/local/bin/ddos stop"
+								done
+								;;
+							'11')
+                                                                for server in 'fw11' 'waf11' 'cdn11'; do
+                                                                        echo -n "$server: "
+                                                                        ssh $server "sudo /usr/local/bin/ddos stop"
+                                                                done
+								;;
+							*)
+								ssh $3 "sudo /usr/local/bin/ddos stop"
+								;;
+						esac
+						;;
+				esac
+				;;
+			start)
+				echo "Start ..."
+                                case $# in
+                                        2)
+                                                for server in $firewalls; do
+                                                        echo -n "$server: "
+                                                        ssh $server "sudo /usr/local/bin/ddos start"
+                                                done
+						for server in $wafs; do
+                                                        echo -n "$server: "
+                                                        ssh $server "sudo /usr/local/bin/ddos start"
+                                                done
+                                                for server in $cdns; do
+                                                        echo -n "$server: "
+                                                        ssh $server "sudo /usr/local/bin/ddos start"
+                                                done
+                                                ;;
+                                        3)
+                                                case "$3" in
+                                                        '01')
+                                                                for server in 'fw01' 'waf01' 'cdn01'; do
+                                                                        echo -n "$server: "
+                                                                        ssh $server "sudo /usr/local/bin/ddos start"
+                                                                done
+                                                                ;;
+                                                        '11')
+                                                                for server in 'fw11' 'waf11' 'cdn11'; do
+                                                                        echo -n "$server: "
+                                                                        ssh $server "sudo /usr/local/bin/ddos start"
+                                                                done
+                                                                ;;
+                                                        *)
+                                                                ssh $3 "sudo /usr/local/bin/ddos start"
+                                                                ;;
+                                                esac
+                                                ;;
+                                esac
+				;;
+			restart)
+				ddos srv stop $3
+				ddos srv start $3
+				;;
+		esac
+		;;
+	*)
+		usage
+		;;
+esac
+
+exit 0
+
