@@ -1,0 +1,99 @@
+#!/bin/bash
+
+function usage {
+	echo "$0 [create|delete|status|start|stop|restart|cc] (<service>) ((<fqdn,fqdn,...>) (<url>))"
+}
+
+function create {
+	fqdn=`echo $1 | sed 's/,/ /g'`
+	vhost=`echo $fqdn | awk '{ print $1 }'` 
+	sed "s/FQDN/$fqdn/" /usr/local/etc/vhost.tpl | sed "s/VHOST/$vhost/" | sed "s/IP/$2/" > /etc/nginx/sites-available/$vhost
+	ln -s /etc/nginx/sites-available/$vhost /etc/nginx/sites-enabled/$vhost 2> /dev/null
+	/etc/init.d/nginx reload
+}
+
+function delete {
+	fqdn=`echo $1 | sed 's/,/ /g'`
+	vhost=`echo $fqdn | awk '{ print $1 }'` 
+	rm -f /etc/nginx/sites-available/$vhost /etc/nginx/sites-enabled/$vhost
+	/etc/init.d/nginx reload
+}
+
+if [ $# -lt 1 ]; then
+	usage
+	exit 1
+fi
+if [ $# -gt 3 ]; then
+        usage
+        exit 1
+fi
+
+case "$1" in
+	create)
+		create $2 $3
+                echo "ok"
+		;;
+	delete)
+		delete $2
+                echo "ok"
+		;;
+	status)
+		echo -n "	nginx: "
+		sudo /etc/init.d/nginx status &> /dev/null
+		if [ $? -eq 0 ]; then
+                        echo "ok"
+                else
+                        echo "ko"
+                fi
+		;;
+	stop)
+		if [ "$3" != "" ]; then
+			case "$3" in
+				'nginx')
+					sudo /etc/init.d/nginx stop &> /dev/null
+					;;
+				*)
+					echo "Services: nginx"
+					;;
+			esac
+		else
+			sudo /etc/init.d/nginx stop &> /dev/null
+		fi
+		;;
+	start)
+                if [ "$3" != "" ]; then
+                        case "$3" in
+                                'nginx')
+                                        sudo /etc/init.d/nginx start &> /dev/null
+                                        ;;
+                                *)
+                                        echo "Services: nginx"
+                                        ;;
+                        esac
+                else
+                        sudo /etc/init.d/nginx start &> /dev/null
+                fi
+		;;
+	restart)
+		ddos stop $3
+		ddos start $3
+		;;
+	cc)
+		if [ $# -ne 3 ]; then
+			usage
+			exit 1
+		fi
+		url='http://$2$3'
+		echo -n "$url: "
+		for f in `sudo grep -r "$url" /opt/cache/ | awk -F':' '{ print $1 }'`; do
+			sudo rm -f $f
+		done
+		echo "ok"
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac
+
+exit 0

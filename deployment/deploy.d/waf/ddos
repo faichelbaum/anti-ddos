@@ -1,0 +1,122 @@
+#!/bin/bash
+
+function usage {
+	echo "$0 [list|search|create|delete|status|stop|start|restart] (<fqdn,fqdn,...>)"
+}
+
+function create {
+	fqdn=`echo $1 | sed 's/,/ /g'`
+	vhost=`echo $fqdn | awk '{ print $1 }'` 
+	sed "s/VHOST/$fqdn/" /usr/local/etc/vhost.tpl > /etc/nginx/sites-available/$vhost
+	ln -s /etc/nginx/sites-available/$vhost /etc/nginx/sites-enabled/$vhost 2> /dev/null
+	/etc/init.d/nginx reload
+}
+
+function delete {
+	fqdn=`echo $1 | sed 's/,/ /g'`
+	vhost=`echo $fqdn | awk '{ print $1 }'` 
+	rm -f /etc/nginx/sites-available/$vhost /etc/nginx/sites-enabled/$vhost
+	/etc/init.d/nginx reload
+}
+
+if [ $# -lt 1 ]; then
+	usage
+	exit 1
+fi
+if [ $# -gt 3 ]; then
+        usage
+        exit 1
+fi
+
+case "$1" in
+	list)
+		ls /etc/nginx/sites-enabled
+		;;
+	search)
+		grep $2 /etc/nginx/sites-enabled/* | awk -F: '{ print $1 }' | sort | uniq
+		;;
+	create)
+		create $2
+		echo "ok"
+		;;
+	delete)
+		delete $2
+		echo "ok"
+		;;
+	status)
+		echo -n "	naxsi: "
+		ps `sudo cat /var/run/nginx-naxsi-ui_extract.pid` &> /dev/null
+		if [ $? -eq 0 ]; then
+                        echo -n "extract [ ok ] "
+                else
+                        echo -n "extract [ ko ] "
+		fi
+                ps `sudo cat /var/run/nginx-naxsi-ui_intercept.pid` &> /dev/null
+                if [ $? -eq 0 ]; then
+                        echo -n "intercept [ ok ] "
+                else
+                        echo -n "intercept [ ko ] "
+                fi
+		echo ""
+		echo -n "	nginx: "
+		sudo /etc/init.d/nginx status &> /dev/null
+		if [ $? -eq 0 ]; then
+                        echo "ok"
+                else
+                        echo "ko"
+                fi
+		echo -n "	mysql: "
+                sudo /etc/init.d/mysql status &> /dev/null
+                if [ $? -eq 0 ]; then
+                        echo "ok"
+                else
+                        echo "ko"
+                fi
+		;;
+	stop)
+		case "$3" in
+			'nginx')
+				sudo /etc/init.d/nginx stop &> /dev/null
+				;;
+			'naxsi')
+				sudo /etc/init.d/nginx-naxsi-ui stop &> /dev/null
+				;;
+			'mysql')
+				sudo /etc/init.d/mysql stop &> /dev/null
+				;;
+			*)
+				sudo /etc/init.d/nginx stop &> /dev/null
+				sudo /etc/init.d/nginx-naxsi-ui stop &> /dev/null
+				sudo /etc/init.d/mysql stop &> /dev/null
+				;;
+		esac
+		;;
+	start)
+		case "$3" in
+			'nginx')
+				sudo /etc/init.d/nginx start &> /dev/null
+				;;
+			'naxsi')
+				sudo /etc/init.d/nginx-naxsi-ui start &> /dev/null
+				;;
+			'mysql')
+				sudo /etc/init.d/mysql start &> /dev/null
+				;;
+			*)
+				sudo /etc/init.d/nginx start &> /dev/null
+				sudo /etc/init.d/nginx-naxsi-ui start &> /dev/null
+				sudo /etc/init.d/mysql start &> /dev/null
+				;;
+		esac
+		;;
+	restart)
+		ddos stop $3
+		ddos start $3
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac
+
+exit 0

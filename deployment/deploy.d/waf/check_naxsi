@@ -1,0 +1,25 @@
+#!/bin/bash
+
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+STATE_DEPENDENT=4
+
+ps `sudo cat /var/run/nginx-naxsi-ui_extract.pid` &> /dev/null
+
+STATE=$?
+if [ "$STATE" = "$STATE_OK" ]; then
+	ps `sudo cat /var/run/nginx-naxsi-ui_intercept.pid` &> /dev/null
+	STATE=$?
+	if [ "$STATE" != "$STATE_OK" ]; then 
+		echo "Naxsi UI Intercept is down"
+		exit $STATE_CRITICAL
+	fi      
+	echo "Naxsi UI is fully running"
+	exit 0
+else
+	echo "Naxsi UI Extract is down"
+	exit $STATE_CRITICAL
+fi
+

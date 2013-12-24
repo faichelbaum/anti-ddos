@@ -1,0 +1,3 @@
+TCP_MODE="atcp"
+UDP_MODE="audp"
+

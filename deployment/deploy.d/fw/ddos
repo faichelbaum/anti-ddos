@@ -1,0 +1,188 @@
+#!/bin/bash
+
+IPT="sudo /sbin/iptables"
+
+function usage {
+	echo "$0 [ban|unban|check|list|stop|start|status] (<ip>)"
+}
+function ban {
+	$IPT -I INPUT -s $1 -m tcp -p tcp -j TARPIT 
+	$IPT -I INPUT -s $1 -j DROP 
+	$IPT -I FORWARD -s $1 -m tcp -p tcp -j TARPIT 
+	$IPT -I FORWARD -s $1 -j DROP 
+	$IPT -I INPUT -s $1 -m limit --limit 1/minute --limit-burst 3 -j LOG --log-level debug --log-prefix 'Portsentry: tarpiting: '
+	echo "-> $1 is blacklisted"
+}
+function unban {
+	for chain in INPUT FORWARD; do
+		for id in `$IPT -L $chain -n --line-numbers | grep $1 | awk '{ print $1 }' | sort -r`; do
+			$IPT -D $chain $id;
+		done
+	done
+	echo "-> $1 is no more blacklisted"
+}
+function check {
+	check=`$IPT -L INPUT -n | grep TARPIT | grep $1 | wc -l`
+	if [ $check -eq 0 ]; then
+		echo "-> $1 is not blacklisted"
+	else
+		echo "-> $1 is blacklisted"
+	fi
+}
+function list {
+	$IPT -L INPUT -n | grep TARPIT | awk '{ print $4 }' | grep -v '0.0.0.0/0'
+}
+if [ $# -lt 1 ]; then
+	usage 
+	exit 1
+fi
+if [ $# -gt 2 ]; then
+	usage
+	exit 1
+fi
+case "$1" in
+	ban)
+		ban $2
+		;;
+	unban)
+		unban $2
+		;;
+	check)
+		check $2
+		;;
+	list)
+		list
+		;;
+	status)
+		echo -n "	farpd: "
+		ps `sudo cat /var/run/farpd.pid` &> /dev/null
+		if [ $? -eq 0 ]; then
+			echo "ok"
+		else
+			echo "ko"
+		fi
+		echo -n "       fail2ban: "
+                ps `sudo cat /var/run/fail2ban/fail2ban.pid` &> /dev/null
+                if [ $? -eq 0 ]; then
+                        echo "ok"
+                else
+                        echo "ko"
+                fi
+		echo -n "	ldirectord: "
+		ps `sudo cat /var/run/ldirectord.ldirectord.cf.pid` &> /dev/null
+                if [ $? -eq 0 ]; then
+			ko=0
+			sudo /sbin/ipvsadm -L -n | awk '{ print $2" "$4 }' | grep ".* [[:digit:]]" | while read i; do
+				serv=`echo $i |awk '{ print $1 }'`
+				weight=`echo $i |awk '{ print $2 }'`
+				if [ "$weight" = "0" ]; then
+					ko=1;
+					echo -n "$serv [ ko ] "
+				fi
+			done
+			if [ $ko -eq 0 ]; then
+				echo "ok"
+			else
+				echo ""
+			fi
+                else
+                        echo "ko"
+                fi
+		echo -n "	portsentry: "
+		if [ `ps aux | grep portsentry | grep -v grep | wc -l` -gt 0 ]; then
+                        echo "ok"
+                else
+                        echo "ko"
+                fi
+                echo -n "       honeypot: "
+		sudo /etc/init.d/honeyd status &> /dev/null
+                if [ $? -gt 0 ]; then
+                        echo "ok"
+                else
+                        echo "ko"
+                fi
+		echo -n "	iptables: "
+		if [ `sudo /sbin/iptables -L INPUT -n | wc -l` -gt 2 ]; then
+                        echo "ok"
+                else
+                        echo "ko"
+                fi
+		;;
+	stop)
+		if [ "$3" != "" ]; then
+			case "$3" in
+				'farpd')
+					sudo /etc/init.d/farpd stop &> /dev/null
+					;;
+				'fail2ban')
+					sudo /etc/init.d/fail2ban stop &> /dev/null
+					;;
+				'ldirectord')
+					sudo /etc/init.d/ldirectord stop &> /dev/null
+					;;
+				'portsentry')
+					sudo /etc/init.d/portsentry stop &> /dev/null
+					;;
+				'honeypot')
+					sudo /etc/init.d/honeyd stop &> /dev/null
+					;;
+				'iptables')
+					sudo /usr/local/bin/rules.sh stop &> /dev/null
+					;;
+				*)
+					echo "Services: farpd fail2ban ldirectord portsentry honeypot iptables"
+					usage
+					exit 1
+					;;
+			esac
+		else
+			sudo /etc/init.d/farpd stop &> /dev/null
+			sudo /etc/init.d/fail2ban stop &> /dev/null
+			sudo /etc/init.d/ldirectord stop &> /dev/null
+			sudo /etc/init.d/portsentry stop &> /dev/null
+			sudo /etc/init.d/honeyd stop &> /dev/null
+			sudo /usr/local/bin/rules.sh stop &> /dev/null
+		fi
+		;;
+	start)
+                if [ "$3" != "" ]; then
+			case "$3" in
+				'farpd')
+					sudo /etc/init.d/farpd start &> /dev/null
+					;;
+				'fail2ban')
+					sudo /etc/init.d/fail2ban start &> /dev/null
+					;;
+				'ldirectord')
+					sudo /etc/init.d/ldirectord start &> /dev/null
+					;;
+				'portsentry')
+					sudo /etc/init.d/portsentry start &> /dev/null
+					;;
+				'honeypot')
+					sudo /etc/init.d/honeyd start &> /dev/null
+					;;
+				'iptables')
+					sudo /usr/local/bin/rules.sh start &> /dev/null
+					;;
+				*)
+					echo "Services: farpd fail2ban ldirectord portsentry honeypot iptables"
+					usage
+					exit 1
+					;;
+			esac
+                else
+                        sudo /etc/init.d/farpd start &> /dev/null
+                        sudo /etc/init.d/fail2ban start &> /dev/null
+                        sudo /etc/init.d/ldirectord start &> /dev/null
+                        sudo /etc/init.d/portsentry start &> /dev/null
+                        sudo /etc/init.d/honeyd start &> /dev/null
+                        sudo /usr/local/bin/rules.sh start &> /dev/null
+                fi
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac
+exit 0

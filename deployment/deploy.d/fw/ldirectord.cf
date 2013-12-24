@@ -1,0 +1,35 @@
+checktimeout=1
+negotiatetimeout=1
+checkinterval=5
+autoreload=yes
+logfile="l0"
+quiescent=yes
+virtual=VIP1:80
+        real=NET_SERV.201:80 gate
+	service=http
+        scheduler=lc
+        protocol=tcp
+        persistent=5
+	checktype=negotiate
+
+virtual=VIP2:80
+        real=NET_SERV.201:80 gate
+        service=http
+        scheduler=lc
+        protocol=tcp
+        persistent=5
+        checktype=negotiate
+
+virtual=VIP3:80
+        real=NET_SERV.201:80 gate
+        service=http
+        scheduler=lc
+        protocol=tcp
+        persistent=5
+        checktype=negotiate
+
+virtual=VPN:3006
+        real=NET_SERV.101:3006 gate
+        scheduler=rr
+        protocol=tcp
+	checktype=connect
